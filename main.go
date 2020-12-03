@@ -44,8 +44,8 @@ import (
 
 // for FSM state define
 const (
-	InitReq         = iota
-	NotifyTCPClient = iota
+	InitReq = iota
+	WaitRes = iota
 )
 
 type proxyChannel struct {
@@ -74,19 +74,20 @@ var urlMap syncMap
 func (smap *syncMap) Len() int {
 	length := 0
 	smap.Range(func(k, v interface{}) bool {
-		fmt.Println(k, v)
+		//fmt.Println(k, v)
 		length++
 		return true
 	})
+	fmt.Printf("##length = %d\n", length)
 	return length
 }
 
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Printf("%v\n", r)
-	fmt.Println("r.Method = ", r.Method)
-	fmt.Println("r.URL = ", r.URL)
-	fmt.Println("r.Header = ", r.Header)
-	fmt.Println("r.Body = ", r.Body)
+	// fmt.Printf("%v\n", r)
+	// fmt.Println("r.Method = ", r.Method)
+	// fmt.Println("r.URL = ", r.URL)
+	// fmt.Println("r.Header = ", r.Header)
+	// fmt.Println("r.Body = ", r.Body)
 
 	if connMap.Len() == 0 {
 		fmt.Fprintf(w, "no client registed, please wait and try again!")
@@ -96,24 +97,68 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// 遍历通道，找到空闲的通道
 	connMap.Range(func(k, v interface{}) bool {
 		value, _ := v.(proxyChannel)
-		fmt.Printf("%v\n", value)
+
 		if value.State == InitReq {
-			value.State = NotifyTCPClient
+			value.State = WaitRes
+
+			connMap.Store(k, value)
 
 			// 回写客户端, 要求客户端去请求http服务
-			fmt.Println(fmt.Sprintf("%s", r.URL))
+			// fmt.Println(fmt.Sprintf("%s", r.URL))
 			_, err := value.Conn.Write([]byte(fmt.Sprintf("%s", r.URL)))
 			if err != nil {
-				value.State = InitReq
 				return false
 			}
+			for {
+				body := <-value.BodyNotifier
+				//fmt.Printf("Received data: %v\n", string(body))
+				if string(body) == "finish!" {
+					value.State = InitReq
+					connMap.Store(k, value)
+					break
+				}
 
-			body := <-value.BodyNotifier
-			fmt.Printf("Received data: %v\n", string(body))
-			fmt.Fprintf(w, string(body))
+				fmt.Fprintf(w, string(body))
+			}
 		}
+
 		return true
 	})
+
+	// TODO 加入conn的等待队列
+
+	// var conn net.Conn
+	// connMap.Range(func(k, v interface{}) bool {
+	// 	value, _ := v.(proxyChannel)
+	// 	if value.State == InitReq {
+	// 		conn = value.Conn
+	// 	}
+	// 	return true
+	// })
+
+	// val, _ := connMap.Load(conn)
+	// value, _ := val.(proxyChannel)
+	// value.State = WaitRes
+	// connMap.Store(conn, value)
+
+	// // 回写客户端, 要求客户端去请求http服务
+	// // fmt.Println(fmt.Sprintf("%s", r.URL))
+	// _, err := value.Conn.Write([]byte(fmt.Sprintf("%s", r.URL)))
+	// if err != nil {
+	// 	fmt.Fprintf(w, "no client registed, please wait and try again!")
+	// 	return
+	// }
+
+	// for {
+	// 	body := <-value.BodyNotifier
+	// 	//fmt.Printf("Received data: %v\n", string(body))
+	// 	if string(body) == "finish!" {
+	// 		connMap.Store(conn, InitReq)
+	// 		break
+	// 	}
+
+	// 	fmt.Fprintf(w, string(body))
+	// }
 
 }
 
@@ -136,7 +181,7 @@ func tcpServer() {
 		//存储连接
 		node := proxyChannel{State: InitReq, Conn: conn, URLNotifier: make(chan string), BodyNotifier: make(chan []byte)}
 		_, ok := connMap.LoadOrStore(conn, node)
-		fmt.Printf("### ok = %v\n", ok)
+		// fmt.Printf("### ok = %v\n", ok)
 		_ = ok // TODO
 		go doServerStuff(conn)
 
@@ -146,19 +191,31 @@ func tcpServer() {
 
 func doServerStuff(conn net.Conn) {
 	for {
-		buf := make([]byte, 512)
+
+		buf := make([]byte, 10240)
 		len, err := conn.Read(buf)
+
+		//fmt.Printf("## len: %v, err: %v\n", len, err)
 
 		if err != nil {
 			fmt.Println("Error reading", err.Error())
 			return //终止程序
 		}
 
+		//fmt.Println("@@@@@@@@@@@@@@@@@@@@@@ received!")
+
+		//fmt.Println(string(buf[len-7 : len]))
+
 		connMap.Range(func(k, v interface{}) bool {
 			value, _ := v.(proxyChannel)
 			if value.Conn == conn {
-				fmt.Printf("Received data: %v\n", string(buf[:len]))
-				value.BodyNotifier <- buf
+				//fmt.Printf("Received data: %v\n", string(buf[:len]))
+				if string(buf[len-7:len]) == "finish!" {
+					value.BodyNotifier <- buf[:len-7]
+					value.BodyNotifier <- []byte("finish!")
+				} else {
+					value.BodyNotifier <- buf[:len]
+				}
 			}
 			return true
 		})
@@ -176,7 +233,7 @@ func tcpClient() {
 	}
 
 	for {
-		buf := make([]byte, 512)
+		buf := make([]byte, 1024)
 		len, err := conn.Read(buf)
 		if err != nil {
 			fmt.Println("Error reading", err.Error())
@@ -185,13 +242,12 @@ func tcpClient() {
 		fmt.Printf("Received data: %v\n", string(buf[:len])) // 目标url
 
 		// 获取 目标地址后 发起http请求,
-		resp, err := http.Get("http://www.baidu.com")
+		resp, err := http.Get("http://www.baidu.com/")
 		if err != nil {
 			// handle error
 		}
 
-		body, err := ioutil.ReadAll(resp.Body)
-
+		body, err := ioutil.ReadAll(resp.Body) // 一次读取所有的内容
 		if err != nil {
 			// handle error
 		} else {
@@ -200,8 +256,33 @@ func tcpClient() {
 			if err != nil {
 				fmt.Printf("### write error:%s\n", err.Error())
 			}
+			_, err = conn.Write([]byte("finish!")) // 回复内容给 tcp server
+			if err != nil {
+				fmt.Printf("### write error:%s\n", err.Error())
+			}
 		}
 		resp.Body.Close()
+
+		// buffer := make([]byte, 10240)
+		// for {
+		// 	n, err := resp.Body.Read(buffer)
+		// 	//fmt.Println(n, err)
+		// 	if err == io.EOF {
+		// 		_, _ = conn.Write([]byte("finish!")) // 回复内容给 tcp server
+		// 		fmt.Println("## finish!")
+		// 		if err != nil {
+		// 			fmt.Printf("### write error:%s\n", err.Error())
+		// 		}
+		// 		break
+		// 	} else {
+		// 		_, err = conn.Write([]byte(buffer[:n])) // 回复内容给 tcp server
+		// 		fmt.Println(string(buffer[:n]))
+		// 		if err != nil {
+		// 			fmt.Printf("### write error:%s\n", err.Error())
+		// 		}
+		// 	}
+		// }
+		// resp.Body.Close()
 	}
 }
 

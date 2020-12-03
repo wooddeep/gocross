@@ -37,6 +37,9 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/jessevdk/go-flags"
@@ -71,6 +74,8 @@ var connMap syncMap
 
 var urlMap syncMap
 
+var waitChan = make(chan net.Conn)
+
 func (smap *syncMap) Len() int {
 	length := 0
 	smap.Range(func(k, v interface{}) bool {
@@ -82,6 +87,17 @@ func (smap *syncMap) Len() int {
 	return length
 }
 
+func getGID() int {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	idField := strings.Fields(strings.TrimPrefix(string(buf[:n]), "goroutine "))[0]
+	id, err := strconv.Atoi(idField)
+	if err != nil {
+		panic(fmt.Sprintf("cannot get goroutine id: %v", err))
+	}
+	return id
+}
+
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// fmt.Printf("%v\n", r)
 	// fmt.Println("r.Method = ", r.Method)
@@ -89,76 +105,68 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	// fmt.Println("r.Header = ", r.Header)
 	// fmt.Println("r.Body = ", r.Body)
 
+	//mt.Printf("goroutine ID is:%d\n", getGID())
+
 	if connMap.Len() == 0 {
 		fmt.Fprintf(w, "no client registed, please wait and try again!")
 		return
 	}
 
-	// 遍历通道，找到空闲的通道
-	connMap.Range(func(k, v interface{}) bool {
-		value, _ := v.(proxyChannel)
+	conn := <-waitChan // 获取当前可用通道
+	val, _ := connMap.Load(conn)
+	value, _ := val.(proxyChannel)
 
-		if value.State == InitReq {
-			value.State = WaitRes
+	// 通知客户端（携带URL） 要求客户端去请求http服务
+	// fmt.Println(fmt.Sprintf("%s", r.URL))
+	_, err := value.Conn.Write([]byte(fmt.Sprintf("%s", r.URL))) // 网络通信
+	if err != nil {
+		fmt.Fprintf(w, "no client registed, please wait and try again!")
+		waitChan <- conn
+		return
+	}
 
-			connMap.Store(k, value)
-
-			// 回写客户端, 要求客户端去请求http服务
-			// fmt.Println(fmt.Sprintf("%s", r.URL))
-			_, err := value.Conn.Write([]byte(fmt.Sprintf("%s", r.URL)))
-			if err != nil {
-				return false
-			}
-			for {
-				body := <-value.BodyNotifier
-				//fmt.Printf("Received data: %v\n", string(body))
-				if string(body) == "finish!" {
-					value.State = InitReq
-					connMap.Store(k, value)
-					break
-				}
-
-				fmt.Fprintf(w, string(body))
-			}
+	for {
+		body := <-value.BodyNotifier
+		//fmt.Printf("Received data: %v\n", string(body))
+		if string(body) == "finish!" {
+			connMap.Store(conn, InitReq)
+			waitChan <- conn
+			break
 		}
 
-		return true
-	})
+		fmt.Fprintf(w, string(body))
+	}
 
-	// TODO 加入conn的等待队列
-
-	// var conn net.Conn
+	// 遍历通道，找到空闲的通道
 	// connMap.Range(func(k, v interface{}) bool {
 	// 	value, _ := v.(proxyChannel)
+
 	// 	if value.State == InitReq {
-	// 		conn = value.Conn
+	// 		value.State = WaitRes
+
+	// 		connMap.Store(k, value)
+
+	// 		// 回写客户端, 要求客户端去请求http服务
+	// 		// fmt.Println(fmt.Sprintf("%s", r.URL))
+	// 		_, err := value.Conn.Write([]byte(fmt.Sprintf("%s", r.URL)))
+	// 		if err != nil {
+	// 			return false
+	// 		}
+	// 		for {
+	// 			body := <-value.BodyNotifier
+	// 			//fmt.Printf("Received data: %v\n", string(body))
+	// 			if string(body) == "finish!" {
+	// 				value.State = InitReq
+	// 				connMap.Store(k, value)
+	// 				break
+	// 			}
+
+	// 			fmt.Fprintf(w, string(body))
+	// 		}
 	// 	}
+
 	// 	return true
 	// })
-
-	// val, _ := connMap.Load(conn)
-	// value, _ := val.(proxyChannel)
-	// value.State = WaitRes
-	// connMap.Store(conn, value)
-
-	// // 回写客户端, 要求客户端去请求http服务
-	// // fmt.Println(fmt.Sprintf("%s", r.URL))
-	// _, err := value.Conn.Write([]byte(fmt.Sprintf("%s", r.URL)))
-	// if err != nil {
-	// 	fmt.Fprintf(w, "no client registed, please wait and try again!")
-	// 	return
-	// }
-
-	// for {
-	// 	body := <-value.BodyNotifier
-	// 	//fmt.Printf("Received data: %v\n", string(body))
-	// 	if string(body) == "finish!" {
-	// 		connMap.Store(conn, InitReq)
-	// 		break
-	// 	}
-
-	// 	fmt.Fprintf(w, string(body))
-	// }
 
 }
 
@@ -183,6 +191,9 @@ func tcpServer() {
 		_, ok := connMap.LoadOrStore(conn, node)
 		// fmt.Printf("### ok = %v\n", ok)
 		_ = ok // TODO
+
+		waitChan <- conn // 通知当前通道可用
+
 		go doServerStuff(conn)
 
 	}
@@ -288,6 +299,7 @@ func tcpClient() {
 
 func main() {
 	fmt.Println("hello world!")
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	var opt option
 	flags.Parse(&opt)

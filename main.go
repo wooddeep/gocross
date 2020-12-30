@@ -260,7 +260,7 @@ type option struct {
 	Server        bool   `short:"s" long:"server" description:"server or client"`
 	Domain        string `short:"d" long:"domain" description:"domain to proxy" default:"localhost"`
 	TCPPort       int    `short:"t" long:"tcpport" description:"tcp server's port" default:"5000"`
-	HTTPPort      int    `short:"h" long:"httpport" description:"http proxy server's port" default:"8000"`
+	HTTPPort      int    `short:"x" long:"httpport" description:"http proxy server's port" default:"8000"`
 	ListenAddress string `short:"a" long:"address" description:"server's listen address" default:"localhost"`
 }
 
@@ -282,7 +282,7 @@ func main() {
 
 	waitChan = make(chan net.Conn, concurrent+1)
 
-	if opt.Server == false { // 运行于虚拟桌面, 可以通maven私服, 需要启动tcp服务
+	if opt.Server == false { // 运行于虚拟桌面, 可以通maven私服
 		fmt.Println("outer!")
 		tcpClient()
 

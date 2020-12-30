@@ -137,7 +137,7 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 func tcpServer() {
 	fmt.Println("Starting the server ...")
 	// 创建 listener
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", listenAddress, tcpPort))
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", "0.0.0.0", tcpPort))
 	if err != nil {
 		fmt.Println("Error listening", err.Error())
 		return //终止程序
@@ -286,7 +286,7 @@ func main() {
 
 		http.HandleFunc("/", proxyHandler)
 
-		err := http.ListenAndServe(fmt.Sprintf("%s:%d", listenAddress, httpPort), nil)
+		err := http.ListenAndServe(fmt.Sprintf("%s:%d", "0.0.0.0", httpPort), nil)
 		if err != nil {
 			fmt.Println("服务器错误")
 		}

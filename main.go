@@ -60,44 +60,6 @@ func getGID() int {
 	return id
 }
 
-// fmt.Printf("%v\n", r)
-// fmt.Println("r.Method = ", r.Method)
-// fmt.Println("r.URL = ", r.URL)
-// fmt.Println("r.Header = ", r.Header)
-// fmt.Println("r.Body = ", r.Body)
-// fmt.Printf("goroutine ID is:%d\n", getGID())
-
-// 遍历通道，找到空闲的通道
-// connMap.Range(func(k, v interface{}) bool {
-// 	value, _ := v.(proxyChannel)
-
-// 	if value.State == InitReq {
-// 		value.State = WaitRes
-
-// 		connMap.Store(k, value)
-
-// 		// 回写客户端, 要求客户端去请求http服务
-// 		// fmt.Println(fmt.Sprintf("%s", r.URL))
-// 		_, err := value.Conn.Write([]byte(fmt.Sprintf("%s", r.URL)))
-// 		if err != nil {
-// 			return false
-// 		}
-// 		for {
-// 			body := <-value.BodyNotifier
-// 			//fmt.Printf("Received data: %v\n", string(body))
-// 			if string(body) == "finish!" {
-// 				value.State = InitReq
-// 				connMap.Store(k, value)
-// 				break
-// 			}
-
-// 			fmt.Fprintf(w, string(body))
-// 		}
-// 	}
-
-// 	return true
-// })
-
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	if connMap.Len() == 0 {
 		fmt.Fprintf(w, "no client registed, please wait and try again!")
@@ -163,7 +125,7 @@ func tcpServer() {
 func doServerStuff(conn net.Conn) {
 	for {
 
-		buf := make([]byte, 10240)
+		buf := make([]byte, 10240000)
 		len, err := conn.Read(buf)
 
 		if err != nil {
@@ -188,27 +150,6 @@ func doServerStuff(conn net.Conn) {
 	}
 }
 
-// 按帧传送
-// buffer := make([]byte, 10240)
-// for {
-// 	n, err := resp.Body.Read(buffer)
-// 	//fmt.Println(n, err)
-// 	if err == io.EOF {
-// 		_, _ = conn.Write([]byte("finish!")) // 回复内容给 tcp server
-// 		fmt.Println("## finish!")
-// 		if err != nil {
-// 			fmt.Printf("### write error:%s\n", err.Error())
-// 		}
-// 		break
-// 	} else {
-// 		_, err = conn.Write([]byte(buffer[:n])) // 回复内容给 tcp server
-// 		fmt.Println(string(buffer[:n]))
-// 		if err != nil {
-// 			fmt.Printf("### write error:%s\n", err.Error())
-// 		}
-// 	}
-// }
-// resp.Body.Close()
 func tcpClient() {
 	//打开连接:
 	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", listenAddress, tcpPort))

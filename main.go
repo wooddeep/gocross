@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/gob"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -32,6 +34,18 @@ type syncMap struct {
 	sync.Map
 }
 
+type request struct {
+	Header map[string][]string
+	Path   string
+	Method string
+	Body   []byte
+}
+
+type response struct {
+	Header map[string][]string
+	Body   []byte
+}
+
 var concurrent int
 var domain string
 var tcpPort, httpPort int
@@ -61,6 +75,7 @@ func getGID() int {
 }
 
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
+
 	if connMap.Len() == 0 {
 		fmt.Fprintf(w, "no client registed, please wait and try again!")
 		return
@@ -71,8 +86,24 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	value, _ := val.(proxyChannel)
 
 	// 通知客户端（携带URL） 要求客户端去请求http服务
+	b, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		panic(err)
+	}
+
+	//r.Header
+	fmt.Printf("%s", b)
 	fmt.Println(fmt.Sprintf("## target url: %s", r.URL))
-	_, err := value.Conn.Write([]byte(fmt.Sprintf("http://%s%s", domain, r.URL))) // 网络通信
+	target := request{Header: r.Header, Path: fmt.Sprintf("http://%s%s", domain, r.URL), Method: r.Method, Body: b}
+
+	var result bytes.Buffer
+	encoder := gob.NewEncoder(&result)
+	encoder.Encode(target)
+	userBytes := result.Bytes()
+
+	//fmt.Println(fmt.Sprintf("## target url: %s", r.URL))
+	//_, err = value.Conn.Write([]byte(fmt.Sprintf("http://%s%s", domain, r.URL))) // 网络通信
+	_, err = value.Conn.Write(userBytes) // 网络通信
 	if err != nil {
 		fmt.Fprintf(w, "no client registed, please wait and try again!")
 		waitChan <- conn
@@ -88,7 +119,18 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		fmt.Fprintf(w, string(body))
+		var back response
+		decoder := gob.NewDecoder(bytes.NewReader(body))
+		decoder.Decode(&back)
+		//fmt.Println(target.Path, target.Method, string(target.Body))
+
+		for key, head := range back.Header {
+			fmt.Println(key, head)
+			w.Header().Set(key, head[0])
+		}
+
+		w.Header().Del("Content-Length")
+		fmt.Fprintf(w, string(back.Body))
 	}
 }
 
@@ -160,29 +202,39 @@ func tcpClient() {
 	}
 
 	for {
-		buf := make([]byte, 1024)
+		buf := make([]byte, 1024000)
 		len, err := conn.Read(buf)
 		if err != nil {
 			fmt.Println("Error reading", err.Error())
 			return //终止程序
 		}
-		var url = string(buf[:len])
-		fmt.Printf("Received data: %v\n", url) // 目标url
+		var buffer = buf[:len]
 
-		fmt.Println(fmt.Sprintf("%s", url))
+		var target request
+		decoder := gob.NewDecoder(bytes.NewReader(buffer))
+		decoder.Decode(&target)
+		fmt.Println(target.Path, target.Method, string(target.Body))
 
-		// 获取 目标地址后 发起http请求,
-		resp, err := http.Get(fmt.Sprintf("%s", url))
-		if err != nil {
-			// handle error
+		payload := strings.NewReader(string(target.Body))
+		req, _ := http.NewRequest(target.Method, target.Path, payload)
+		for key, head := range target.Header {
+			fmt.Println(key, head)
+			req.Header.Set(key, head[0])
 		}
+		resp, _ := http.DefaultClient.Do(req)
+		body, err := ioutil.ReadAll(resp.Body)
 
-		body, err := ioutil.ReadAll(resp.Body) // 一次读取所有的内容
 		if err != nil {
 			// handle error
 		} else {
-			//fmt.Println(string(body))
-			_, err = conn.Write([]byte(body)) // 回复内容给 tcp server
+			back := response{Header: resp.Header, Body: body}
+
+			var result bytes.Buffer
+			encoder := gob.NewEncoder(&result)
+			encoder.Encode(back)
+			userBytes := result.Bytes()
+
+			_, err = conn.Write(userBytes) // 回复内容给 tcp server
 			if err != nil {
 				fmt.Printf("### write error:%s\n", err.Error())
 			}
